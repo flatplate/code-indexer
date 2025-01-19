@@ -51,68 +51,73 @@ class TypeScriptEmbeddingProvider:
         definitions = []
         query_string = """
         (program
-            [
-                ; Direct declarations
+          [
+            ; Direct declarations
+            (class_declaration
+              name: (type_identifier) @name) @definition
+
+            (abstract_class_declaration
+              name: (type_identifier) @name) @definition
+              
+            (interface_declaration
+              name: (type_identifier) @name) @definition
+              
+            (type_alias_declaration
+              name: (type_identifier) @name) @definition
+              
+            (enum_declaration
+              name: (identifier) @name) @definition
+              
+            ; Regular function declarations (including React components)
+            (function_declaration
+              name: (identifier) @name
+              parameters: (formal_parameters)) @definition
+              
+            ; Arrow function and other variable declarations
+            (lexical_declaration
+              (variable_declarator
+                name: (identifier) @name
+                value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
+                
+            (variable_declaration
+              (variable_declarator
+                name: (identifier) @name
+                value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
+
+            ; Exported declarations
+            (export_statement
+              [
                 (class_declaration
-                    name: (type_identifier) @name) @definition
+                  name: (type_identifier) @name) @definition
                 
                 (abstract_class_declaration
-                    name: (type_identifier) @name) @definition
-                    
+                  name: (type_identifier) @name) @definition
+                  
                 (interface_declaration
-                    name: (type_identifier) @name) @definition
-                    
+                  name: (type_identifier) @name) @definition
+                  
                 (type_alias_declaration
-                    name: (type_identifier) @name) @definition
-                    
+                  name: (type_identifier) @name) @definition
+                  
                 (enum_declaration
-                    name: (identifier) @name) @definition
-                    
+                  name: (identifier) @name) @definition
+                  
+                ; Include exported function declarations
                 (function_declaration
-                    name: (identifier) @name) @definition
-                    
+                  name: (identifier) @name
+                  parameters: (formal_parameters)) @definition
+                  
                 (lexical_declaration
-                    (variable_declarator
-                        name: (identifier) @name
-                        value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
-                        
+                  (variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
+                    
                 (variable_declaration
-                    (variable_declarator
-                        name: (identifier) @name
-                        value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
-                
-                ; Exported declarations
-                (export_statement
-                    [
-                        (class_declaration
-                            name: (type_identifier) @name) @definition
-                        
-                        (abstract_class_declaration
-                            name: (type_identifier) @name) @definition
-                            
-                        (interface_declaration
-                            name: (type_identifier) @name) @definition
-                            
-                        (type_alias_declaration
-                            name: (type_identifier) @name) @definition
-                            
-                        (enum_declaration
-                            name: (identifier) @name) @definition
-                            
-                        (function_declaration
-                            name: (identifier) @name) @definition
-                            
-                        (lexical_declaration
-                            (variable_declarator
-                                name: (identifier) @name
-                                value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
-                                
-                        (variable_declaration
-                            (variable_declarator
-                                name: (identifier) @name
-                                value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
-                    ])
-            ]) @program
+                  (variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression) (call_expression) (object)] @value))
+              ])
+          ]) @program
         """
         
         try:
