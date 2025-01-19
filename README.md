@@ -109,10 +109,6 @@ The SQLite database contains two tables:
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
-
-[Your chosen license]
-
 ## Dependencies
 
 - click: Command line interface creation
@@ -138,3 +134,44 @@ For issues, questions, or contributions, please create an issue in the GitHub re
 This readme is created by an LLM and I didn't check it so might have a lot of hallucinations.
 
 Also this project is only at testing stage, was written in one afternoon mostly by an LLM.
+
+## Plan
+
+- Performance improvements
+    - Performance sucks
+    - Especially indexing
+    - Search performance can be improved by letting a service run and not have to load the model and embeddings every time
+        - Or for very large repositories we can also use some proper nn index
+    - Indexing performance can be improved in a few way I think
+        - Read and parse files in parallel
+        - Parse multiple files before creating the embeddings for bigger batches
+        - Use gpu/metal backend for embeddings
+        - Keep track of the modification date of the files indexed, and compare for incremental indexing
+- Testing
+    - The treesitter queries don't match everything I want to match
+    - Properly adding some test cases would be the first step to ensure it works
+- Search improvements
+    - Search for types of symbols, search a specific path, filename etc.
+    - Mixed keyword search
+    - Maybe add some reranker (jinaai apparently has a good model)
+    - Auto document symbols that don't have a doc comment for better indexing performance
+    - Rewrite queries to better align with the embedding model's expectations
+- Add more metadata
+- Integrating into neovim and github.com/flatplate/elelem.nvim
+    - The main goal is to integrate this with llm coding assistant for smart context
+- Crazy stuff   
+    - Git commit search
+    - Duplication detection
+
+## License
+
+The MIT License (MIT)
+
+Copyright (c) 2025 Ural Bayhan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
