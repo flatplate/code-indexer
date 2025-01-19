@@ -153,7 +153,7 @@ Also this project is only at testing stage, was written in one afternoon mostly 
 - Search improvements
     - Search for types of symbols, search a specific path, filename etc.
     - Mixed keyword search
-    - Maybe add some reranker (jinaai apparently has a good model)
+    - [x] Maybe add some reranker (jinaai apparently has a good model)
     - Auto document symbols that don't have a doc comment for better indexing performance
     - Rewrite queries to better align with the embedding model's expectations
 - Add more metadata
