@@ -20,8 +20,8 @@ A command-line tool for creating searchable embeddings of TypeScript code. This 
 
 1. Clone the repository:
 ```bash
-git clone [your-repo-url]
-cd [repository-name]
+git clone git@github.com:flatplate/code-indexer.git
+cd git@github.com:flatplate/code-indexer.git
 ```
 
 2. Create a virtual environment (recommended):
@@ -68,6 +68,7 @@ Options:
 .
 ├── code_indexer/
 │   ├── __init__.py
+│   ├── cli.py
 │   └── code_transformer_test.py
 ├── README.md
 ├── requirements.txt
@@ -128,16 +129,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Requires the specified embedding model to be accessible
 - Large projects may require significant memory during indexing
 
-## Troubleshooting
-
-1. If you encounter memory issues during indexing:
-   - Try processing fewer files at a time
-   - Ensure sufficient RAM is available
-
-2. If search results are unexpected:
-   - Verify the same embedding model is used for indexing and searching
-   - Check if the code was properly indexed by examining the database
-
 ## Support
 
 For issues, questions, or contributions, please create an issue in the GitHub repository.
@@ -145,3 +136,5 @@ For issues, questions, or contributions, please create an issue in the GitHub re
 ## Disclaimer
 
 This readme is created by an LLM and I didn't check it so might have a lot of hallucinations.
+
+Also this project is only at testing stage, was written in one afternoon mostly by an LLM.
