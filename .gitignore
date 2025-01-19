@@ -1,0 +1,4 @@
+venv/
+code_index/
+**/*.pyc
+**/__pycache__/
