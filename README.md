@@ -141,3 +141,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## Support
 
 For issues, questions, or contributions, please create an issue in the GitHub repository.
+
+## Disclaimer
+
+This readme is created by an LLM and I didn't check it so might have a lot of hallucinations.
