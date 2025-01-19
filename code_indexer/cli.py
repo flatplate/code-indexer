@@ -1,4 +1,5 @@
 from pathlib import Path
+from sentence_transformers import CrossEncoder
 import click
 from typing import List, Set, Dict, Any
 import pathspec
@@ -8,6 +9,7 @@ import numpy as np
 from datetime import datetime
 import logging
 import json
+import torch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -270,7 +272,11 @@ def index(project_dir: Path, output: Path, model: str, verbose: bool):
 @click.option('--top-k', '-k', default=5, help='Number of results to return')
 @click.option('--model', '-m', default="jinaai/jina-embeddings-v2-base-code",
               help='Name of the embedding model to use')
-def search(index_dir: Path, query: str, top_k: int, model: str):
+@click.option('--reranker-model', '-r', default="jinaai/jina-reranker-v2-base-multilingual",
+              help='Name of the reranker model to use')
+@click.option('--candidates', '-c', default=20, 
+              help='Number of initial candidates to consider for reranking')
+def search(index_dir: Path, query: str, top_k: int, model: str, reranker_model: str, candidates: int):
     """Search the code index for similar definitions"""
     # Load the index
     definitions, embeddings = load_index(index_dir)
@@ -280,19 +286,42 @@ def search(index_dir: Path, query: str, top_k: int, model: str):
     # Initialize provider and search
     provider = TypeScriptEmbeddingProvider(model_name=model)
     
+    # Initialize reranker
+    reranker = CrossEncoder(
+        reranker_model,
+        automodel_args={"torch_dtype": "float16"},
+        trust_remote_code=True,
+    )
+    
     # Convert query to embedding and compute similarities
     query_embedding = provider.model.encode(query)
     similarities = provider.model.similarity(query_embedding, embeddings)[0]
     
-    # Get top k results
-    top_indices = np.argsort(-similarities)[:top_k]
-    results = [(definitions[i], similarities[i]) for i in top_indices]
+    # Get top candidates for reranking
+    candidate_indices = np.argsort(-similarities)[:candidates]
+    candidate_definitions = [definitions[i] for i in candidate_indices]
+    
+    # Prepare text pairs for reranking
+    # We'll use both the code and documentation (if available) for better matching
+    text_pairs = []
+    for def_ in candidate_definitions:
+        text = def_.code
+        if def_.documentation:
+            text = f"{def_.documentation}\n{text}"
+        text_pairs.append([query, text])
+    
+    # Rerank candidates
+    rerank_scores = reranker.predict(text_pairs, convert_to_tensor=True).to('cpu')
+    
+    # Get top k results after reranking
+    reranked_indices = np.argsort(-rerank_scores)[:top_k]
+    results = [(candidate_definitions[i], rerank_scores[i]) for i in reranked_indices]
     
     # Print results
     print("\nSearch Results:")
     print("==============")
-    for definition, similarity in results:
-        print(f"\nScore: {similarity:.3f}")
+    for definition, score in results:
+        print(f"\nReranker Score: {score:.3f}")
         print(f"File: {definition.file_name}")
         print(f"Type: {definition.type}")
         print(f"Identifier: {definition.identifier}")

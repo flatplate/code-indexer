@@ -1,6 +1,7 @@
 certifi==2024.12.14
 charset-normalizer==3.4.1
 click==8.1.8
+einops==0.8.0
 filelock==3.16.1
 fsspec==2024.12.0
 huggingface-hub==0.27.1
