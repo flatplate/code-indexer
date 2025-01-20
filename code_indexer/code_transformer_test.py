@@ -7,7 +7,6 @@ from pathlib import Path
 
 @dataclass
 class CodeDefinition:
-    """Represents a code definition with its location and metadata"""
     file_name: str
     identifier: str
     code: str
@@ -16,35 +15,29 @@ class CodeDefinition:
     char_start: int
     char_end: int
     type: str
-    embedding: Optional[List[float]] = None
     parent_identifier: Optional[str] = None
     is_exported: bool = False
     documentation: Optional[str] = None
+    embedding: Optional[List[float]] = None  # Moved to the end as optional
 
-class TypeScriptEmbeddingProvider:
-    """Provides embeddings and code analysis for TypeScript files"""
+
+class TypeScriptParser:
+    """Parser for TypeScript files that extracts code definitions"""
     
-    def __init__(self, model_name: str = "jinaai/jina-embeddings-v2-base-code"):
-        """Initialize the provider with the specified embedding model"""
+    def __init__(self):
+        """Initialize the TypeScript parser"""
         self.ts_language = Language(ts.language_tsx())
         self.parser = Parser(self.ts_language)
-        self.model = SentenceTransformer(model_name, trust_remote_code=True)
 
-    def process_file(self, file_path: str) -> List[CodeDefinition]:
-        """Process a TypeScript file and return definitions with embeddings"""
+    def parse_file(self, file_path: str) -> List[CodeDefinition]:
+        """Parse a TypeScript file and return definitions without embeddings"""
         with open(file_path, "r") as file:
             code = file.read()
         
         code_bytes = bytes(code, "utf8")
         tree = self.parser.parse(code_bytes)
         
-        definitions = self._get_definitions(tree, code_bytes, Path(file_path).name)
-        
-        if not definitions:
-            print("No definitions found!")
-        
-        self._add_embeddings(definitions)
-        return definitions
+        return self._get_definitions(tree, code_bytes, Path(file_path).name)
 
     def _get_definitions(self, tree, code_bytes: bytes, file_name: str) -> List[CodeDefinition]:
         """Get all top level definitions from the TypeScript file"""
@@ -124,8 +117,6 @@ class TypeScriptEmbeddingProvider:
             query = self.ts_language.query(query_string)
             matches = query.matches(tree.root_node)
             
-            print("Matches found:", len(matches))
-            
             for _, capture_dict in matches:
                 if 'name' in capture_dict:
                     name_node = capture_dict['name'][0]
@@ -155,24 +146,11 @@ class TypeScriptEmbeddingProvider:
                     )
                     definitions.append(definition)
             
-            print(f"Found {len(definitions)} definitions")
-            for d in definitions:
-                print(f"- {d.identifier}: {d.type}")
-            
             return definitions
         
         except Exception as e:
-            print(f"Error during query: {str(e)}")
             import traceback
             traceback.print_exc()
         
         return definitions
 
-    def _add_embeddings(self, definitions: List[CodeDefinition]):
-        """Create embeddings for each definition"""
-        if not definitions:
-            return
-            
-        for definition in definitions:
-            embedding = self.model.encode(definition.code)
-            definition.embedding = embedding.tolist()

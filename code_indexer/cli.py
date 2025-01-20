@@ -1,15 +1,35 @@
 from pathlib import Path
 from sentence_transformers import CrossEncoder
+from sentence_transformers.util import cos_sim
 import click
-from typing import List, Set, Dict, Any
+from typing import List, Set, Dict, Any, Tuple
 import pathspec
-from .code_transformer_test import TypeScriptEmbeddingProvider, CodeDefinition
+import numpy as np
+from typing import List, Tuple
+from .code_transformer_test import TypeScriptParser, CodeDefinition
+from .codeembedder import CodeEmbedder
+from .llama_cpp_python_embedder import LlamaCppCodeEmbedder
 import sqlite3
 import numpy as np
 from datetime import datetime
 import logging
 import json
 import torch
+import os
+
+from contextlib import contextmanager
+
+@contextmanager
+def memory_cleanup():
+    try:
+        yield
+    finally:
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch.mps, 'empty_cache'):
+            torch.mps.empty_cache()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,60 +61,26 @@ def init_database(db_path: Path):
             parent_identifier TEXT,
             is_exported BOOLEAN NOT NULL,
             documentation TEXT,
-            embedding_file TEXT NOT NULL,
-            embedding_index INTEGER NOT NULL
+            embedding_file TEXT,
+            embedding_index INTEGER
         )
     ''')
     
     conn.commit()
     return conn
 
-def save_index(definitions: List[CodeDefinition], output_dir: Path):
-    """Save the code definitions to SQLite + NumPy files"""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    db_path = output_dir / 'index.db'
-    embeddings_path = output_dir / 'embeddings.npy'
-    
-    # Convert embeddings to numpy array
-    embeddings = np.array([d.embedding for d in definitions])
-    
-    # Save embeddings
-    np.save(embeddings_path, embeddings)
-    
-    # Save metadata and definitions to SQLite
-    conn = init_database(db_path)
-    c = conn.cursor()
-    
-    # Save metadata
-    c.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-              ('created_at', datetime.now().isoformat()))
-    c.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-              ('total_definitions', str(len(definitions))))
-    
-    # Save definitions
-    for idx, d in enumerate(definitions):
-        c.execute('''
-            INSERT INTO definitions (
-                file_name, identifier, code, line_start, line_end,
-                char_start, char_end, type, parent_identifier,
-                is_exported, documentation, embedding_file, embedding_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            d.file_name, d.identifier, d.code, d.line_start, d.line_end,
-            d.char_start, d.char_end, d.type, d.parent_identifier,
-            d.is_exported, d.documentation, 'embeddings.npy', idx
-        ))
-    
-    conn.commit()
-    conn.close()
-
-def load_index(index_dir: Path) -> tuple[List[CodeDefinition], np.ndarray]:
+def load_index(index_dir: Path) -> Tuple[List[CodeDefinition], np.ndarray]:
     """Load code definitions from SQLite + NumPy files"""
     db_path = index_dir / 'index.db'
-    embeddings_path = index_dir / 'embeddings.npy'
+    embeddings_path = index_dir / 'embeddings_*.npy'
     
     # Load embeddings
-    embeddings = np.load(embeddings_path)
+    files = sorted(embeddings_path.parent.glob(embeddings_path.name))
+    embeddings = []
+    for file in files:
+        embeddings.append(np.load(file))
+    embeddings = np.concatenate(embeddings)
+    print(f"Loaded {len(embeddings)} embeddings")
     
     # Load definitions from SQLite
     conn = sqlite3.connect(db_path)
@@ -122,28 +108,40 @@ def load_index(index_dir: Path) -> tuple[List[CodeDefinition], np.ndarray]:
     conn.close()
     return definitions, embeddings
 
-def load_gitignore(project_root: Path) -> pathspec.PathSpec:
-    """Load .gitignore patterns from the project root"""
-    gitignore_file = project_root / '.gitignore'
+def load_gitignore(project_root: Path, config_file: Path = None, additional_patterns: List[str] = None) -> pathspec.PathSpec:
+    """Load .gitignore patterns from the project root and additional sources"""
     patterns = []
     
-    # Check all parent directories for .gitignore files
+    # Load patterns from .gitignore files
     current_dir = project_root
     while current_dir.exists():
         gitignore_path = current_dir / '.gitignore'
         if gitignore_path.is_file():
             with open(gitignore_path, 'r', encoding='utf-8') as f:
-                # Add patterns with directory context
-                dir_patterns = [line.strip() for line in f.readlines() if line.strip() and not line.startswith('#')]
+                dir_patterns = [line.strip() for line in f.readlines() 
+                              if line.strip() and not line.startswith('#')]
                 patterns.extend(dir_patterns)
         
-        # Move to parent directory
         parent_dir = current_dir.parent
-        if parent_dir == current_dir:  # Reached root
+        if parent_dir == current_dir:
             break
         current_dir = parent_dir
     
-    # Add some default patterns for TypeScript projects
+    # Load patterns from config file if provided
+    if config_file and config_file.is_file():
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                if 'ignore_patterns' in config:
+                    patterns.extend(config['ignore_patterns'])
+        except json.JSONDecodeError:
+            logger.warning(f"Failed to parse config file: {config_file}")
+    
+    # Add additional patterns from command line
+    if additional_patterns:
+        patterns.extend(additional_patterns)
+    
+    # Add default patterns
     default_patterns = [
         'node_modules/',
         'build/',
@@ -164,6 +162,9 @@ def load_gitignore(project_root: Path) -> pathspec.PathSpec:
         'yarn-error.log*'
     ]
     patterns.extend(default_patterns)
+    
+    # Remove duplicates while preserving order
+    patterns = list(dict.fromkeys(patterns))
     
     return pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, patterns)
 
@@ -224,59 +225,179 @@ def cli():
     """CLI tool for indexing TypeScript projects with embeddings"""
     pass
 
+def save_definitions_without_embeddings(conn, definitions: List[CodeDefinition]):
+    """Save definitions to database without embeddings"""
+    c = conn.cursor()
+    for d in definitions:
+        c.execute('''
+            INSERT INTO definitions (
+                file_name, identifier, code, line_start, line_end,
+                char_start, char_end, type, parent_identifier,
+                is_exported, documentation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            d.file_name, d.identifier, d.code, d.line_start, d.line_end,
+            d.char_start, d.char_end, d.type, d.parent_identifier,
+            d.is_exported, d.documentation
+        ))
+    conn.commit()
+
+def save_embeddings_batch(output_dir: Path, embeddings: List[np.ndarray], start_idx: int):
+    """Save a batch of embeddings to the embeddings file"""
+    files = set(os.listdir(output_dir))
+    embeddings_path = output_dir / 'embeddings_0.npy'
+    file_idx = 0
+    while embeddings_path.name in files:
+        file_idx += 1
+        embeddings_path = output_dir / f'embeddings_{file_idx}.npy'
+    embeddings_array = np.array(embeddings)
+    
+    # For first batch, create new file
+    np.save(embeddings_path, embeddings_array)
+    return embeddings_path
+
+def save_embeddings_batch_db(conn, definitions: List[Tuple[ CodeDefinition, int ]], embedding_file: str):
+    """Save embeddings for a batch of definitions"""
+    c = conn.cursor()
+    for d, idx in definitions:
+        c.execute('''
+            UPDATE definitions 
+            SET embedding_file = ?, embedding_index = ?
+            WHERE identifier = ? AND file_name = ?
+        ''', (embedding_file.name, idx, d.identifier, d.file_name))
+    conn.commit()
+
 @cli.command()
 @click.argument('project_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option('--use-gpu', '-g', default=True, help='Use GPU for embedding computation')
 @click.option('--output', '-o', type=click.Path(file_okay=False, dir_okay=True, path_type=Path), 
               default='code_index', help='Output directory for the index')
+@click.option('--batch-size', '-b', default=50, help='Batch size for processing files')
+@click.option('--fetch-batch-size', default=500, help='Batch size for fetching definitions from database')
+@click.option('--ignore', '-i', default=[], help='Patterns to ignore')
 @click.option('--model', '-m', default="jinaai/jina-embeddings-v2-base-code",
               help='Name of the embedding model to use')
-@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
-def index(project_dir: Path, output: Path, model: str, verbose: bool):
+@click.option('--skip-parsing', '-s', default=False,
+              help='Skip parsing and only create embeddings for existing definitions')
+def index(
+    project_dir: Path,
+    output: Path,
+    batch_size: int,
+    model: str,
+    ignore: List[str],
+    skip_parsing: bool,
+    fetch_batch_size: int,
+    use_gpu: bool
+):
     """Index a TypeScript project directory"""
-    if verbose:
-        logger.setLevel(logging.DEBUG)
+    output.mkdir(parents=True, exist_ok=True)
+    db_path = output / 'index.db'
+    conn = init_database(db_path)
+
+    if skip_parsing:
+        logger.info("Skipping parsing and only creating embeddings for existing definitions")
+    else:
+        # Phase 1: Parse files and save to database
+        parser = TypeScriptParser()
+        
+        gitignore_spec = load_gitignore(project_dir, additional_patterns=ignore)
+        typescript_files = find_typescript_files(project_dir, gitignore_spec)
+        
+        logger.info("Phase 1: Parsing %d files...", len(typescript_files))
+        definitions_without_embeddings = []
+        for file_path in typescript_files:
+            try:
+                definitions = parser.parse_file(str(file_path))
+                definitions_without_embeddings.extend(definitions)
+            except Exception as e:
+                logger.error(f"Error parsing {file_path}: {str(e)}")
+        
+        # Save definitions without embeddings first
+        logger.info("Saving {} definitions to database...".format(len(definitions_without_embeddings)))
+        save_definitions_without_embeddings(conn, definitions_without_embeddings)
+    embedder = LlamaCppCodeEmbedder(use_gpu=use_gpu, batch_size=batch_size) # TODO allow specifying model
+
+    cursor = conn.cursor()
+    cursor.execute('SELECT count(*) FROM definitions WHERE embedding_file IS NULL')
+    total_rows = cursor.fetchone()[0]
+    logger.info(f"Total rows to process: {total_rows}")
+    cursor.execute('SELECT * FROM definitions WHERE embedding_file IS NULL ORDER BY id;')
     
-    logger.info(f"Indexing project: {project_dir}")
+    i = 0
+
+    processed_count = 0
+    while True:
+        with memory_cleanup():
+            batch = cursor.fetchmany(fetch_batch_size)
+            if not batch:
+                break
+            definitions = [
+                CodeDefinition(
+                    file_name=row[1],
+                    identifier=row[2], 
+                    code=row[3],
+                    line_start=row[4],
+                    line_end=row[5],
+                    char_start=row[6],
+                    char_end=row[7],
+                    type=row[8],
+                    parent_identifier=row[9],
+                    is_exported=bool(row[10]),
+                    documentation=row[11],
+                    embedding=None
+                ) for row in batch
+            ]
+
+            embedder.create_embeddings(definitions, batch_size=batch_size)
+
+            batch_embeddings = [d.embedding for d in definitions if d.embedding is not None]
+            embedding_file = save_embeddings_batch(output, batch_embeddings, processed_count)
+            
+            definitions_with_ids = [(d, i) for i, d in enumerate(definitions) if d.embedding is not None]
+            save_embeddings_batch_db(conn, definitions_with_ids, embedding_file)
+            
+            processed_count += len(batch_embeddings)
+            logger.info(f"Processed {processed_count}/{total_rows} embeddings")
+
+            # Cleanup
+            del definitions
+            del batch
+            del definitions_with_ids
+            del batch_embeddings
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # Clear MPS cache if using Apple Silicon
+            elif hasattr(torch.mps, 'empty_cache'):
+                torch.mps.empty_cache()
     
-    # Load gitignore patterns
-    gitignore_spec = load_gitignore(project_dir)
-    
-    # Find TypeScript files
-    typescript_files = find_typescript_files(project_dir, gitignore_spec)
-    logger.info(f"Found {len(typescript_files)} TypeScript files to process")
-    
-    # Initialize the embedding provider
-    provider = TypeScriptEmbeddingProvider(model_name=model)
-    
-    # Process each file
-    all_definitions = []
-    for file_path in typescript_files:
-        try:
-            logger.info(f"Processing {file_path.relative_to(project_dir)}")
-            definitions = provider.process_file(str(file_path))
-            all_definitions.extend(definitions)
-            logger.debug(f"Found {len(definitions)} definitions in file")
-        except Exception as e:
-            logger.error(f"Error processing {file_path}: {str(e)}")
-            continue
-    
-    logger.info(f"Total definitions found: {len(all_definitions)}")
-    
-    # Save the index
-    save_index(all_definitions, output)
-    logger.info(f"Index saved to {output}")
+    conn.close()
+    logger.info("Indexing complete!")
 
 @cli.command()
 @click.argument('index_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('query', type=str)
 @click.option('--top-k', '-k', default=5, help='Number of results to return')
+@click.option('--use-gpu', '-g', default=True, help='Use GPU for embedding computation')
 @click.option('--model', '-m', default="jinaai/jina-embeddings-v2-base-code",
               help='Name of the embedding model to use')
 @click.option('--reranker-model', '-r', default="jinaai/jina-reranker-v2-base-multilingual",
               help='Name of the reranker model to use')
 @click.option('--candidates', '-c', default=20, 
               help='Number of initial candidates to consider for reranking')
-def search(index_dir: Path, query: str, top_k: int, model: str, reranker_model: str, candidates: int):
+def search(
+    index_dir: Path,
+    query: str,
+    top_k: int,
+    model: str,
+    reranker_model: str,
+    candidates: int,
+    use_gpu: bool
+):
     """Search the code index for similar definitions"""
     # Load the index
     definitions, embeddings = load_index(index_dir)
@@ -284,7 +405,7 @@ def search(index_dir: Path, query: str, top_k: int, model: str, reranker_model: 
     logger.info(f"Loaded {len(definitions)} definitions from index")
     
     # Initialize provider and search
-    provider = TypeScriptEmbeddingProvider(model_name=model)
+    provider = LlamaCppCodeEmbedder(use_gpu=use_gpu) # TODO allow specifying model
     
     # Initialize reranker
     reranker = CrossEncoder(
@@ -294,8 +415,8 @@ def search(index_dir: Path, query: str, top_k: int, model: str, reranker_model: 
     )
     
     # Convert query to embedding and compute similarities
-    query_embedding = provider.model.encode(query)
-    similarities = provider.model.similarity(query_embedding, embeddings)[0]
+    query_embedding = provider.embed_single(query)
+    similarities = cos_sim(query_embedding, embeddings)[0]
     
     # Get top candidates for reranking
     candidate_indices = np.argsort(-similarities)[:candidates]

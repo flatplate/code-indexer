@@ -139,16 +139,23 @@ Also this project is only at testing stage, was written in one afternoon mostly 
 
 - More languages
 - Performance improvements
-    - Performance sucks
-    - Especially indexing
+    - ~~Performance sucks~~ NOT ANYMORE!
+    - ~~Especially indexing~~ I am pretty happy right now
     - Search performance can be improved by letting a service run and not have to load the model and embeddings every time
         - Or for very large repositories we can also use some proper nn index
-    - Indexing performance can be improved in a few way I think
-        - Keep track of the modification date of the files indexed, and compare for incremental indexing
-        - Read and parse files in parallel (apparently parsing is super fast, not sure if this would bring anything, especially after implementing incremental parsing)
-        - (almost done) Parse multiple files before creating the embeddings for bigger batches
-        - Convert embedding model to ONNX and quantize with optimum
-        - Use gpu/metal backend for embeddings
+    - ~~Indexing performance can be improved in a few way I think~~ pretty okay right now
+        - The trick was to use a quantized version of the model with llama cpp python bindings
+        - Also reading all the files at once and then embedding them in batches i guess.
+        - Still need to implement incremental parsing and indexing if i want it to be useful during coding
+        - Old stuff
+            - Keep track of the modification date of the files indexed, and compare for incremental indexing
+            - DONE
+                - Parse multiple files before creating the embeddings for bigger batches
+                - use llama.cpp for embeddings with a quantized model
+            - CANCELED
+                - Convert embedding model to ONNX and quantize with optimum (tried this, wasn't super good performance)
+                - Read and parse files in parallel (apparently parsing is super fast, not sure if this would bring anything, especially after implementing incremental parsing)
+                - Use gpu/metal backend for embeddings (using llama.cpp instead)
 - Testing
     - The treesitter queries don't match everything I want to match
     - Properly adding some test cases would be the first step to ensure it works
