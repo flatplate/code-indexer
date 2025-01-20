@@ -137,16 +137,18 @@ Also this project is only at testing stage, was written in one afternoon mostly 
 
 ## Plan
 
+- More languages
 - Performance improvements
     - Performance sucks
     - Especially indexing
     - Search performance can be improved by letting a service run and not have to load the model and embeddings every time
         - Or for very large repositories we can also use some proper nn index
     - Indexing performance can be improved in a few way I think
-        - Read and parse files in parallel
-        - Parse multiple files before creating the embeddings for bigger batches
-        - Use gpu/metal backend for embeddings
         - Keep track of the modification date of the files indexed, and compare for incremental indexing
+        - Read and parse files in parallel (apparently parsing is super fast, not sure if this would bring anything, especially after implementing incremental parsing)
+        - (almost done) Parse multiple files before creating the embeddings for bigger batches
+        - Convert embedding model to ONNX and quantize with optimum
+        - Use gpu/metal backend for embeddings
 - Testing
     - The treesitter queries don't match everything I want to match
     - Properly adding some test cases would be the first step to ensure it works
