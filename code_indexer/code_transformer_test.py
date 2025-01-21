@@ -19,6 +19,7 @@ class CodeDefinition:
     is_exported: bool = False
     documentation: Optional[str] = None
     embedding: Optional[List[float]] = None  # Moved to the end as optional
+    embedding_file: Optional[str] = None
 
 
 class TypeScriptParser:

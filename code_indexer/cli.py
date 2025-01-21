@@ -74,8 +74,11 @@ def load_index(index_dir: Path) -> Tuple[List[CodeDefinition], np.ndarray]:
     db_path = index_dir / 'index.db'
     embeddings_path = index_dir / 'embeddings_*.npy'
     
-    # Load embeddings
-    files = sorted(embeddings_path.parent.glob(embeddings_path.name))
+    # Load embeddings with numeric sorting
+    files = embeddings_path.parent.glob(embeddings_path.name)
+    # Sort files by numeric index
+    files = sorted(files, key=lambda x: int(x.stem.split('_')[1]))
+    
     embeddings = []
     for file in files:
         embeddings.append(np.load(file))
@@ -101,7 +104,8 @@ def load_index(index_dir: Path) -> Tuple[List[CodeDefinition], np.ndarray]:
             parent_identifier=row[9],
             is_exported=bool(row[10]),
             documentation=row[11],
-            embedding=embeddings[embedding_idx].tolist()
+            embedding=embeddings[embedding_idx].tolist(),
+            embedding_file=row[12]
         )
         definitions.append(definition)
     
@@ -323,8 +327,6 @@ def index(
     logger.info(f"Total rows to process: {total_rows}")
     cursor.execute('SELECT * FROM definitions WHERE embedding_file IS NULL ORDER BY id;')
     
-    i = 0
-
     processed_count = 0
     while True:
         with memory_cleanup():
@@ -383,9 +385,10 @@ def index(
 @click.argument('query', type=str)
 @click.option('--top-k', '-k', default=5, help='Number of results to return')
 @click.option('--use-gpu', '-g', default=True, help='Use GPU for embedding computation')
+@click.option('--use-reranker', '-r', default=True, help='Use reranker')
 @click.option('--model', '-m', default="jinaai/jina-embeddings-v2-base-code",
               help='Name of the embedding model to use')
-@click.option('--reranker-model', '-r', default="jinaai/jina-reranker-v2-base-multilingual",
+@click.option('--reranker-model', default="jinaai/jina-reranker-v2-base-multilingual",
               help='Name of the reranker model to use')
 @click.option('--candidates', '-c', default=20, 
               help='Number of initial candidates to consider for reranking')
@@ -396,7 +399,8 @@ def search(
     model: str,
     reranker_model: str,
     candidates: int,
-    use_gpu: bool
+    use_gpu: bool,
+    use_reranker: bool
 ):
     """Search the code index for similar definitions"""
     # Load the index
@@ -407,36 +411,41 @@ def search(
     # Initialize provider and search
     provider = LlamaCppCodeEmbedder(use_gpu=use_gpu) # TODO allow specifying model
     
-    # Initialize reranker
-    reranker = CrossEncoder(
-        reranker_model,
-        automodel_args={"torch_dtype": "float16"},
-        trust_remote_code=True,
-    )
-    
     # Convert query to embedding and compute similarities
     query_embedding = provider.embed_single(query)
     similarities = cos_sim(query_embedding, embeddings)[0]
     
-    # Get top candidates for reranking
-    candidate_indices = np.argsort(-similarities)[:candidates]
-    candidate_definitions = [definitions[i] for i in candidate_indices]
+    if use_reranker:
+        # Initialize reranker
+        reranker = CrossEncoder(
+            reranker_model,
+            automodel_args={"torch_dtype": "float16"},
+            trust_remote_code=True,
+        )
+        
+        # Get top candidates for reranking
+        candidate_indices = np.argsort(-similarities)[:candidates]
+        candidate_definitions = [definitions[i] for i in candidate_indices]
+        
+        # Prepare text pairs for reranking
+        text_pairs = []
+        for def_ in candidate_definitions:
+            text = def_.code
+            if def_.documentation:
+                text = f"{def_.documentation}\n{text}"
+            text_pairs.append([query, text])
+        
+        # Rerank candidates
+        rerank_scores = reranker.predict(text_pairs, convert_to_tensor=True).to('cpu')
+        
+        # Get top k results after reranking
+        reranked_indices = np.argsort(-rerank_scores)[:top_k]
+        results = [(candidate_definitions[i], rerank_scores[i]) for i in reranked_indices]
+    else:
+        # Without reranking, just use top-k results from embedding similarity
+        top_indices = np.argsort(-similarities)[:top_k]
+        results = [(definitions[i], similarities[i]) for i in top_indices]
     
-    # Prepare text pairs for reranking
-    # We'll use both the code and documentation (if available) for better matching
-    text_pairs = []
-    for def_ in candidate_definitions:
-        text = def_.code
-        if def_.documentation:
-            text = f"{def_.documentation}\n{text}"
-        text_pairs.append([query, text])
-    
-    # Rerank candidates
-    rerank_scores = reranker.predict(text_pairs, convert_to_tensor=True).to('cpu')
-    
-    # Get top k results after reranking
-    reranked_indices = np.argsort(-rerank_scores)[:top_k]
-    results = [(candidate_definitions[i], rerank_scores[i]) for i in reranked_indices]
     
     # Print results
     print("\nSearch Results:")
@@ -444,6 +453,7 @@ def search(
     for definition, score in results:
         print(f"\nReranker Score: {score:.3f}")
         print(f"File: {definition.file_name}")
+        print(f"Embedding file: {definition.embedding_file}")
         print(f"Type: {definition.type}")
         print(f"Identifier: {definition.identifier}")
         if definition.documentation:
