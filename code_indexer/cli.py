@@ -90,7 +90,7 @@ def load_index(index_dir: Path) -> Tuple[List[CodeDefinition], np.ndarray]:
     c = conn.cursor()
     
     definitions = []
-    for row in c.execute('SELECT * FROM definitions'):
+    for row in c.execute('SELECT * FROM definitions where embedding_file IS NOT NULL ORDER BY id;'):
         embedding_idx = row[13]  # embedding_index column
         definition = CodeDefinition(
             file_name=row[1],
@@ -105,7 +105,8 @@ def load_index(index_dir: Path) -> Tuple[List[CodeDefinition], np.ndarray]:
             is_exported=bool(row[10]),
             documentation=row[11],
             embedding=embeddings[embedding_idx].tolist(),
-            embedding_file=row[12]
+            embedding_file=row[12],
+            embedding_idx=embedding_idx
         )
         definitions.append(definition)
     
@@ -380,6 +381,14 @@ def index(
     conn.close()
     logger.info("Indexing complete!")
 
+def extract_quoted_terms(query: str) -> Tuple[List[str], str]:
+    """Extract quoted terms and return them along with the remaining query"""
+    import re
+    quoted_terms = re.findall(r'"([^"]*)"', query)
+    # Remove quoted terms from the query
+    remaining_query = re.sub(r'"[^"]*"', '', query).strip()
+    return quoted_terms, remaining_query
+
 @cli.command()
 @click.argument('index_dir', type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.argument('query', type=str)
@@ -407,51 +416,77 @@ def search(
     definitions, embeddings = load_index(index_dir)
     embeddings = embeddings.astype(np.float32)
     logger.info(f"Loaded {len(definitions)} definitions from index")
+
+    # Extract quoted terms and remaining query
+    quoted_terms, remaining_query = extract_quoted_terms(query)
     
-    # Initialize provider and search
-    provider = LlamaCppCodeEmbedder(use_gpu=use_gpu) # TODO allow specifying model
+    if quoted_terms:
+        logger.info(f"Found quoted terms: {quoted_terms}")
+        # Filter definitions that contain all quoted terms
+        filtered_definitions = []
+        filtered_embeddings = []
+        
+        for definition in definitions:
+            matches_all_terms = True
+            searchable_text = f"{definition.code} {definition.documentation or ''} {definition.identifier}".lower()
+            
+            for term in quoted_terms:
+                if term.lower() not in searchable_text:
+                    matches_all_terms = False
+                    break
+            
+            if matches_all_terms:
+                filtered_definitions.append(definition)
+                filtered_embeddings.append(embeddings[definition.embedding_idx])
+        
+        if filtered_definitions:
+            logger.info(f"Found {len(filtered_definitions)} definitions matching quoted terms")
+            definitions = filtered_definitions
+            embeddings = np.array(filtered_embeddings)
+        else:
+            logger.warning("No definitions found matching all quoted terms")
+            return
     
-    # Convert query to embedding and compute similarities
-    query_embedding = provider.embed_single(query)
-    similarities = cos_sim(query_embedding, embeddings)[0]
-    
-    if use_reranker:
-        # Initialize reranker
-        reranker = CrossEncoder(
-            reranker_model,
-            automodel_args={"torch_dtype": "float16"},
-            trust_remote_code=True,
-        )
-        
-        # Get top candidates for reranking
-        candidate_indices = np.argsort(-similarities)[:candidates]
-        candidate_definitions = [definitions[i] for i in candidate_indices]
-        
-        # Prepare text pairs for reranking
-        text_pairs = []
-        for def_ in candidate_definitions:
-            text = def_.code
-            if def_.documentation:
-                text = f"{def_.documentation}\n{text}"
-            text_pairs.append([query, text])
-        
-        # Rerank candidates
-        rerank_scores = reranker.predict(text_pairs, convert_to_tensor=True).to('cpu')
-        
-        # Get top k results after reranking
-        reranked_indices = np.argsort(-rerank_scores)[:top_k]
-        results = [(candidate_definitions[i], rerank_scores[i]) for i in reranked_indices]
+    if not remaining_query and quoted_terms:
+        # If only quoted terms were provided, sort by identifier length as a simple ranking
+        results = [(d, 1.0) for d in sorted(definitions, key=lambda x: len(x.identifier))][:top_k]
     else:
-        # Without reranking, just use top-k results from embedding similarity
-        top_indices = np.argsort(-similarities)[:top_k]
-        results = [(definitions[i], similarities[i]) for i in top_indices]
-    
+        # Initialize provider and search
+        provider = LlamaCppCodeEmbedder(use_gpu=use_gpu)
+        
+        # Use remaining query or full query if no quoted terms
+        query_embedding = provider.embed_single(query)
+        similarities = cos_sim(query_embedding, embeddings)[0]
+        
+        if use_reranker:
+            reranker = CrossEncoder(
+                reranker_model,
+                automodel_args={"torch_dtype": "float16"},
+                trust_remote_code=True,
+            )
+            
+            candidate_indices = np.argsort(-similarities)[:candidates]
+            candidate_definitions = [definitions[i] for i in candidate_indices]
+            
+            text_pairs = []
+            for def_ in candidate_definitions:
+                text = def_.code
+                if def_.documentation:
+                    text = f"{def_.documentation}\n{text}"
+                text_pairs.append([query, text])
+            
+            rerank_scores = reranker.predict(text_pairs, convert_to_tensor=True).to('cpu')
+            reranked_indices = np.argsort(-rerank_scores)[:top_k]
+            results = [(candidate_definitions[i], rerank_scores[i]) for i in reranked_indices]
+        else:
+            top_indices = np.argsort(-similarities)[:top_k]
+            results = [(definitions[i], similarities[i]) for i in top_indices]
     
     # Print results
     print("\nSearch Results:")
     print("==============")
     for definition, score in results:
-        print(f"\nReranker Score: {score:.3f}")
+        print(f"\nScore: {score:.3f}")
         print(f"File: {definition.file_name}")
         print(f"Embedding file: {definition.embedding_file}")
         print(f"Type: {definition.type}")

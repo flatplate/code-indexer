@@ -4,6 +4,7 @@ import tree_sitter_typescript as ts
 from tree_sitter import Language, Parser
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
+import numpy as np
 
 @dataclass
 class CodeDefinition:
@@ -20,6 +21,7 @@ class CodeDefinition:
     documentation: Optional[str] = None
     embedding: Optional[List[float]] = None  # Moved to the end as optional
     embedding_file: Optional[str] = None
+    embedding_idx: Optional[int] = None
 
 
 class TypeScriptParser:
